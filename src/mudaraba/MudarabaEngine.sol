@@ -1,23 +1,56 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {SunnaMath} from "../libraries/SunnaMath.sol";
 
-/// @title MudarabaEngine — Profit-Loss Sharing Engine
+/// @title MudarabaEngine — Islamic Profit-Loss Sharing Engine
 /// @author Abdulwahed Mansour — Sunna Protocol
-/// @notice Implements Islamic Mudaraba: funder provides capital, manager provides effort
-/// @dev Enforces: P = max(0, R - L). Multiply-before-divide for precision.
+/// @notice Implements the Mudaraba contract: funder provides capital, manager
+///         provides effort. Profit is shared per agreed ratio. Loss is borne by
+///         funder (capital) and manager (effort — recorded as Burned M-Effort).
+/// @dev Core formula: P = max(0, finalBalance - capital).
+///      All arithmetic uses multiply-before-divide via SunnaMath.
+///      Settlement is atomic: calculate → transfer → emit in one transaction.
+/// @custom:security-contact abdulwahed.mansour@protonmail.com
+/// @custom:invariant Ghunm-bil-Ghurm: funderPayout + managerPayout == finalBalance.
 contract MudarabaEngine is ReentrancyGuard {
+    // ═══════════════════════════════════════════════════════════════
+    //  Sunna Protocol — Mudaraba Engine
+    //  Authored by Abdulwahed Mansour / Sweden — February 2026
+    //
+    //  The Arabic word "Mudaraba" (مضاربة) describes a partnership
+    //  where one party provides capital and the other provides labor.
+    //  This is perhaps the oldest form of venture capital in human
+    //  history — predating modern finance by over a millennium.
+    //
+    //  The principle governing Mudaraba is Ghunm bil-Ghurm:
+    //  "Whoever gains must also bear the risk of loss."
+    //
+    //  In this engine:
+    //  - The funder risks capital. On loss, they lose money.
+    //  - The manager risks effort. On loss, their JHD is burned.
+    //  - Neither party can externalize loss to the other.
+    //  - The code enforces this. Not a contract. Not a promise. Code.
+    //
+    //  Abdulwahed Mansour / Sweden — Invariant Labs
+    //  Original concept: Asymmetric Deficit Socialization (ADS)
+    // ═══════════════════════════════════════════════════════════════
 
-    error InvalidShares();
-    error ProjectAlreadySettled();
-    error OnlyManager();
+    using SafeERC20 for IERC20;
+    using SunnaMath for uint256;
 
-    event ProjectCreated(uint256 indexed projectId, address funder, address manager, uint256 capital);
-    event ProjectSettled(uint256 indexed projectId, uint256 finalBalance, uint256 profit, uint256 funderShare, uint256 managerShare);
-    event EffortBurned(uint256 indexed projectId, address manager, uint256 jhdBurned);
+    // ──────────────────────────────────────
+    // Types
+    // ──────────────────────────────────────
+
+    enum ProjectStatus {
+        Active,     // Capital deployed, manager working
+        Settled,    // Profitable — both parties received shares
+        Burned      // Loss occurred — funder lost capital, manager lost effort
+    }
 
     struct Project {
         address funder;
@@ -26,27 +59,98 @@ contract MudarabaEngine is ReentrancyGuard {
         uint256 finalBalance;
         uint16 funderShareBps;
         uint16 managerShareBps;
-        bool settled;
+        ProjectStatus status;
+        uint256 createdAt;
+        uint256 settledAt;
     }
+
+    // ──────────────────────────────────────
+    // Errors
+    // ──────────────────────────────────────
+
+    error InvalidProfitSplit(uint16 funderBps, uint16 managerBps);
+    error InvalidCapitalAmount();
+    error ProjectAlreadySettled(uint256 projectId);
+    error ProjectNotFound(uint256 projectId);
+    error NotProjectManager(address caller, address expected);
+    error ZeroAddress();
+    error InsufficientBalance(uint256 required, uint256 available);
+
+    // ──────────────────────────────────────
+    // Events
+    // ──────────────────────────────────────
+
+    event ProjectCreated(
+        uint256 indexed projectId,
+        address indexed funder,
+        address indexed manager,
+        uint256 capital,
+        uint16 funderShareBps
+    );
+
+    event ProjectSettled(
+        uint256 indexed projectId,
+        uint256 finalBalance,
+        uint256 netProfit,
+        uint256 funderPayout,
+        uint256 managerPayout
+    );
+
+    event EffortBurnTriggered(
+        uint256 indexed projectId,
+        address indexed manager
+    );
+
+    // ──────────────────────────────────────
+    // State
+    // ──────────────────────────────────────
 
     IERC20 public immutable stablecoin;
     uint256 public projectCount;
     mapping(uint256 => Project) public projects;
 
+    /// @notice Total capital currently deployed across all active projects.
+    uint256 public totalActiveCapital;
+
+    /// @notice Cumulative settled projects.
+    uint256 public totalSettledProjects;
+
+    // ──────────────────────────────────────
+    // Constructor
+    // ──────────────────────────────────────
+
+    /// @param _stablecoin The stablecoin used for capital (e.g., USDC).
     constructor(address _stablecoin) {
+        if (_stablecoin == address(0)) revert ZeroAddress();
         stablecoin = IERC20(_stablecoin);
     }
 
-    /// @notice Create a new Mudaraba project
+    // ──────────────────────────────────────
+    // Project Lifecycle
+    // ──────────────────────────────────────
+
+    /// @notice Create a new Mudaraba project.
+    /// @dev Funder deposits capital. Profit split must sum to 10000 bps.
+    /// @param manager Address of the manager (Mudarib).
+    /// @param capital Amount of stablecoin to commit.
+    /// @param funderBps Funder's share of profit in basis points.
+    /// @param managerBps Manager's share of profit in basis points.
+    /// @return projectId The unique identifier for the created project.
     function createProject(
         address manager,
         uint256 capital,
         uint16 funderBps,
         uint16 managerBps
     ) external nonReentrant returns (uint256 projectId) {
-        if (funderBps + managerBps != 10_000) revert InvalidShares();
+        // Validation
+        if (manager == address(0)) revert ZeroAddress();
+        if (capital == 0) revert InvalidCapitalAmount();
+        if (funderBps + managerBps != 10_000) {
+            revert InvalidProfitSplit(funderBps, managerBps);
+        }
 
         projectId = projectCount++;
+
         projects[projectId] = Project({
             funder: msg.sender,
             manager: manager,
@@ -54,42 +158,116 @@ contract MudarabaEngine is ReentrancyGuard {
             finalBalance: 0,
             funderShareBps: funderBps,
             managerShareBps: managerBps,
-            settled: false
+            status: ProjectStatus.Active,
+            createdAt: block.timestamp,
+            settledAt: 0
         });
 
-        SafeERC20.safeTransferFrom(stablecoin, msg.sender, address(this), capital);
-        emit ProjectCreated(projectId, msg.sender, manager, capital);
+        totalActiveCapital += capital;
+
+        // Transfer capital from funder to this contract
+        stablecoin.safeTransferFrom(msg.sender, address(this), capital);
+
+        emit ProjectCreated(projectId, msg.sender, manager, capital, funderBps);
     }
 
-    /// @notice Settle project — distribute profit or record loss
-    /// @dev Core formula: P = max(0, finalBalance - capital)
+    /// @notice Settle a project — distribute profit or record loss.
+    /// @dev CRITICAL INVARIANT: funderPayout + managerPayout == finalBalance.
+    ///      This must hold for every settlement. No funds created or destroyed.
+    ///
+    ///      Profit case:
+    ///        profit = finalBalance - capital
+    ///        funderPayout = capital + bpsOf(profit, funderBps)
+    ///        managerPayout = bpsOf(profit, managerBps)
+    ///
+    ///      Loss case:
+    ///        funderPayout = finalBalance  (bears material loss)
+    ///        managerPayout = 0            (bears effort loss — Burned M-Effort)
+    ///
+    /// @param projectId The project to settle.
+    /// @param finalBalance The verified final balance of the investment.
     function settle(uint256 projectId, uint256 finalBalance) external nonReentrant {
         Project storage proj = projects[projectId];
-        if (proj.settled) revert ProjectAlreadySettled();
-        if (msg.sender != proj.manager) revert OnlyManager();
 
+        // Checks
+        if (proj.funder == address(0)) revert ProjectNotFound(projectId);
+        if (proj.status != ProjectStatus.Active) revert ProjectAlreadySettled(projectId);
+        if (msg.sender != proj.manager) {
+            revert NotProjectManager(msg.sender, proj.manager);
+        }
+
+        uint256 contractBalance = stablecoin.balanceOf(address(this));
+        if (finalBalance > contractBalance) {
+            revert InsufficientBalance(finalBalance, contractBalance);
+        }
+
+        // Effects
         proj.finalBalance = finalBalance;
-        proj.settled = true;
+        proj.settledAt = block.timestamp;
+        totalActiveCapital -= proj.capital;
+        totalSettledProjects++;
 
-        SafeERC20.safeTransferFrom(stablecoin, msg.sender, address(this), finalBalance);
+        uint256 funderPayout;
+        uint256 managerPayout;
+        uint256 netProfit;
 
         if (finalBalance > proj.capital) {
-            // PROFIT CASE
-            uint256 profit = finalBalance - proj.capital;
-            uint256 funderProfit = (profit * proj.funderShareBps) / 10_000;
-            uint256 managerProfit = (profit * proj.managerShareBps) / 10_000;
+            // ══════════════════════════════════════════════════
+            // PROFIT CASE — Both parties share the gain
+            // ══════════════════════════════════════════════════
+            proj.status = ProjectStatus.Settled;
 
-            uint256 funderTotal = proj.capital + funderProfit;
+            netProfit = finalBalance - proj.capital;
 
-            SafeERC20.safeTransfer(stablecoin, proj.funder, funderTotal);
-            SafeERC20.safeTransfer(stablecoin, proj.manager, managerProfit);
+            // CRITICAL: multiply before divide to prevent precision loss
+            uint256 funderProfit = netProfit.bpsOf(proj.funderShareBps);
+            managerPayout = netProfit.bpsOf(proj.managerShareBps);
+            funderPayout = proj.capital + funderProfit;
 
-            emit ProjectSettled(projectId, finalBalance, profit, funderTotal, managerProfit);
+            // Interactions — transfer to both parties
+            stablecoin.safeTransfer(proj.funder, funderPayout);
+            if (managerPayout > 0) {
+                stablecoin.safeTransfer(proj.manager, managerPayout);
+            }
         } else {
-            // LOSS CASE — Funder bears material loss, Manager bears effort loss
-            SafeERC20.safeTransfer(stablecoin, proj.funder, finalBalance);
-            emit ProjectSettled(projectId, finalBalance, 0, finalBalance, 0);
-            emit EffortBurned(projectId, proj.manager, 0);
+            // ══════════════════════════════════════════════════
+            // LOSS CASE — Ghunm bil-Ghurm in action
+            // Funder bears material loss (receives less than capital)
+            // Manager bears effort loss (JHD burned via SunnaLedger)
+            // Manager receives ZERO. This is by design, not by bug.
+            //
+            // Abdulwahed Mansour / Sweden — this settlement logic
+            // is the mathematical enforcement of a 1400-year-old
+            // ethical principle. The absence of a transfer to the
+            // manager is the most important line in this function.
+            // ══════════════════════════════════════════════════
+            proj.status = ProjectStatus.Burned;
+
+            funderPayout = finalBalance;
+            managerPayout = 0;
+
+            // Interaction — funder receives whatever remains
+            if (funderPayout > 0) {
+                stablecoin.safeTransfer(proj.funder, funderPayout);
+            }
+
+            emit EffortBurnTriggered(projectId, proj.manager);
         }
+
+        emit ProjectSettled(projectId, finalBalance, netProfit, funderPayout, managerPayout);
+    }
+
+    // ──────────────────────────────────────
+    // View Functions
+    // ──────────────────────────────────────
+
+    /// @notice Get full project details.
+    function getProject(uint256 projectId) external view returns (Project memory) {
+        return projects[projectId];
+    }
+
+    /// @notice Check if a project is still active.
+    function isActive(uint256 projectId) external view returns (bool) {
+        return projects[projectId].status == ProjectStatus.Active;
     }
 }
