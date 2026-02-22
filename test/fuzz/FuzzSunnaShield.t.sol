@@ -17,7 +17,7 @@ contract FuzzSunnaShieldTest is Test {
     SunnaShield public shield;
     MockToken public token;
     address public user = address(0x1);
-    
+
     function setUp() public {
         token = new MockToken();
         shield = new SunnaShield(
@@ -28,34 +28,35 @@ contract FuzzSunnaShieldTest is Test {
             500 // 5% fee
         );
     }
-    
+
     /// @notice Fuzz: reportLoss must never mint fee shares
     function testFuzz_noFeeOnAnyLoss(uint256 depositAmount, uint256 lossAmount) public {
         depositAmount = bound(depositAmount, 1e6, 1e24);
-        
+
         // Deposit first
         token.mint(user, depositAmount);
         vm.startPrank(user);
         token.approve(address(shield), depositAmount);
         shield.deposit(depositAmount, user);
         vm.stopPrank();
-        
+
+        // Record investment so investedAssets > 0
+        shield.recordInvestment(depositAmount);
+
         lossAmount = bound(lossAmount, 1, shield.investedAssets());
-        
+
         uint256 engineSharesBefore = shield.balanceOf(address(this));
         shield.reportLoss(lossAmount);
         uint256 engineSharesAfter = shield.balanceOf(address(this));
-        
+
         assertEq(engineSharesAfter, engineSharesBefore, "NO FEE ON LOSS: fee shares minted during loss");
     }
-    
+
     /// @notice Fuzz: deposit then full repay with profit should mint fee shares when fee > 0
     function testFuzz_feeOnProfit(uint256 depositAmount, uint256 profitAmount) public {
         depositAmount = bound(depositAmount, 1e6, 1e24);
         // Ensure profit is large enough so fee shares round to at least 1
-        // fee = profit * 500 / 10_000 = profit / 20
-        // convertToShares rounds down, so need fee >= a meaningful amount relative to totalAssets
-        uint256 minProfit = depositAmount / 100; // 1% of deposit ensures non-trivial fee
+        uint256 minProfit = depositAmount / 100;
         if (minProfit < 200) minProfit = 200;
         profitAmount = bound(profitAmount, minProfit, depositAmount);
 
@@ -65,6 +66,9 @@ contract FuzzSunnaShieldTest is Test {
         token.approve(address(shield), depositAmount);
         shield.deposit(depositAmount, user);
         vm.stopPrank();
+
+        // Record investment so investedAssets >= depositAmount
+        shield.recordInvestment(depositAmount);
 
         // Engine (this) needs tokens for repay
         token.mint(address(this), depositAmount + profitAmount);

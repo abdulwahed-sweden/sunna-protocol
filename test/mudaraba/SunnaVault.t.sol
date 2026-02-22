@@ -3,6 +3,8 @@ pragma solidity ^0.8.24;
 
 import "forge-std/Test.sol";
 import {SunnaVault} from "../../src/mudaraba/SunnaVault.sol";
+import {SolvencyGuard} from "../../src/core/SolvencyGuard.sol";
+import {ShariaGuard} from "../../src/core/ShariaGuard.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
 contract MockToken is ERC20 {
@@ -13,13 +15,24 @@ contract MockToken is ERC20 {
 contract SunnaVaultTest is Test {
     SunnaVault vault;
     MockToken token;
+    SolvencyGuard solvencyGuard;
+    ShariaGuard shariaGuard;
 
     address user = makeAddr("user");
     address outsider = makeAddr("outsider");
 
     function setUp() public {
         token = new MockToken();
-        vault = new SunnaVault(address(token));
+        solvencyGuard = new SolvencyGuard();
+        shariaGuard = new ShariaGuard();
+
+        vault = new SunnaVault(address(token), address(solvencyGuard), address(shariaGuard));
+
+        // Authorize vault as an engine on SolvencyGuard
+        solvencyGuard.authorizeEngine(address(vault));
+
+        // Whitelist the token as halal
+        shariaGuard.whitelistAsset(address(token), "Test stablecoin");
 
         token.mint(user, 1_000_000e18);
         token.mint(address(this), 1_000_000e18);
@@ -64,31 +77,29 @@ contract SunnaVaultTest is Test {
         vault.deposit(1_000);
 
         vm.prank(user);
-        vm.expectRevert(SunnaVault.InsufficientBalance.selector);
+        vm.expectRevert(
+            abi.encodeWithSelector(SunnaVault.InsufficientDeposit.selector, 1_001, 1_000)
+        );
         vault.withdraw(1_001);
     }
 
-    // ── allocateToProject ────────────────────────────────────────────
+    // ── depositorCount ───────────────────────────────────────────────
 
-    function test_allocateToProject() public {
-        // Admin (address(this)) deposits first so vault has tokens
-        vault.deposit(5_000);
+    function test_depositorCount() public {
+        vm.prank(user);
+        vault.deposit(1_000);
 
-        address recipient = makeAddr("recipient");
-        uint256 vaultBalBefore = token.balanceOf(address(vault));
+        assertEq(vault.depositorCount(), 1, "one depositor");
 
-        // address(this) is the admin since it deployed the vault
-        vault.allocateToProject(recipient, 2_000);
-
-        assertEq(token.balanceOf(recipient), 2_000, "recipient should receive 2000 tokens");
-        assertEq(token.balanceOf(address(vault)), vaultBalBefore - 2_000, "vault balance should decrease");
+        vault.deposit(2_000); // address(this) deposits
+        assertEq(vault.depositorCount(), 2, "two depositors");
     }
 
-    // ── allocateToProject: only admin ────────────────────────────────
+    // ── isConsistent ─────────────────────────────────────────────────
 
-    function test_onlyAdmin_allocate_reverts() public {
-        vm.prank(outsider);
-        vm.expectRevert(SunnaVault.UnauthorizedAdmin.selector);
-        vault.allocateToProject(outsider, 1_000);
+    function test_isConsistent() public {
+        vm.prank(user);
+        vault.deposit(1_000);
+        assertTrue(vault.isConsistent(), "vault should be consistent after deposit");
     }
 }

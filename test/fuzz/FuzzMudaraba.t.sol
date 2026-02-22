@@ -35,16 +35,18 @@ contract FuzzMudarabaTest is Test {
         uint256 pid = engine.createProject(manager, capital, 6000, 4000);
         vm.stopPrank();
 
-        // Fund the manager for settlement
-        token.mint(manager, finalBalance);
-        vm.startPrank(manager);
-        token.approve(address(engine), finalBalance);
-        engine.settle(pid, finalBalance);
-        vm.stopPrank();
+        // Engine needs finalBalance tokens for settlement.
+        // It already has `capital` from createProject.
+        // For profit case (finalBalance > capital), mint the extra directly to engine.
+        if (finalBalance > capital) {
+            token.mint(address(engine), finalBalance - capital);
+        }
 
-        // Total tokens minted = capital + finalBalance
-        // These must be distributed across funder, manager, and engine
-        uint256 totalMinted = capital + finalBalance;
+        vm.prank(manager);
+        engine.settle(pid, finalBalance);
+
+        // Total tokens minted = capital + max(0, finalBalance - capital) = max(capital, finalBalance)
+        uint256 totalMinted = capital + (finalBalance > capital ? finalBalance - capital : 0);
         uint256 totalHeld = token.balanceOf(funder) + token.balanceOf(manager) + token.balanceOf(address(engine));
         assertEq(totalHeld, totalMinted, "Token conservation violated");
     }
@@ -60,13 +62,11 @@ contract FuzzMudarabaTest is Test {
         uint256 pid = engine.createProject(manager, capital, 6000, 4000);
         vm.stopPrank();
 
-        token.mint(manager, finalBalance);
-        vm.startPrank(manager);
-        token.approve(address(engine), finalBalance);
+        // Engine already has `capital` >= finalBalance, no extra mint needed
+        vm.prank(manager);
         engine.settle(pid, finalBalance);
-        vm.stopPrank();
 
-        // Manager sent finalBalance to engine and got 0 back on loss
+        // Manager never had tokens and gets 0 from loss settlement
         uint256 managerAfter = token.balanceOf(manager);
         assertEq(managerAfter, 0, "Manager should get zero on loss");
     }
@@ -83,11 +83,11 @@ contract FuzzMudarabaTest is Test {
         uint256 pid = engine.createProject(manager, capital, 6000, 4000);
         vm.stopPrank();
 
-        token.mint(manager, finalBalance);
-        vm.startPrank(manager);
-        token.approve(address(engine), finalBalance);
+        // Mint extra profit tokens directly to engine for settlement
+        token.mint(address(engine), extraProfit);
+
+        vm.prank(manager);
         engine.settle(pid, finalBalance);
-        vm.stopPrank();
 
         uint256 funderBalance = token.balanceOf(funder);
         assertGe(funderBalance, capital, "Funder must get at least capital back on profit");

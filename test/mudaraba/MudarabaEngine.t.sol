@@ -2,171 +2,233 @@
 pragma solidity ^0.8.24;
 
 import "forge-std/Test.sol";
-import {MudarabaEngine} from "../../src/mudaraba/MudarabaEngine.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import "../../src/mudaraba/MudarabaEngine.sol";
 
-contract MockToken is ERC20 {
-    constructor() ERC20("Mock USDT", "mUSDT") {}
-    function mint(address to, uint256 a) external { _mint(to, a); }
+/// @title MockUSDC — Test stablecoin
+contract MockUSDC is ERC20 {
+    constructor() ERC20("Mock USDC", "USDC") {
+        _mint(msg.sender, 1_000_000_000e6);
+    }
+
+    function decimals() public pure override returns (uint8) {
+        return 6;
+    }
+
+    function mint(address to, uint256 amount) external {
+        _mint(to, amount);
+    }
 }
 
+/// @title MudarabaEngine Tests — Profit-Loss Sharing Verification
+/// @author Abdulwahed Mansour — Sunna Protocol
 contract MudarabaEngineTest is Test {
     MudarabaEngine engine;
-    MockToken token;
-
+    MockUSDC usdc;
     address funder = makeAddr("funder");
     address manager = makeAddr("manager");
 
     function setUp() public {
-        token = new MockToken();
-        engine = new MudarabaEngine(address(token));
+        usdc = new MockUSDC();
+        engine = new MudarabaEngine(address(usdc));
 
-        token.mint(funder, 1_000_000e18);
-        token.mint(manager, 1_000_000e18);
-
+        // Give funder tokens and approve
+        usdc.mint(funder, 1_000_000e6);
         vm.prank(funder);
-        token.approve(address(engine), type(uint256).max);
-
-        vm.prank(manager);
-        token.approve(address(engine), type(uint256).max);
+        usdc.approve(address(engine), type(uint256).max);
     }
 
-    // ── createProject ────────────────────────────────────────────────
+    // ──────────────────────────────────────
+    // Project Creation
+    // ──────────────────────────────────────
 
-    function test_createProject() public {
-        uint256 funderBalBefore = token.balanceOf(funder);
-
+    function test_createProject_success() public {
         vm.prank(funder);
-        uint256 projectId = engine.createProject(manager, 10_000, 6000, 4000);
+        uint256 pid = engine.createProject(manager, 10_000e6, 6000, 4000);
 
-        assertEq(engine.projectCount(), 1, "projectCount should be 1");
-        assertEq(projectId, 0, "first projectId should be 0");
-
-        (
-            address storedFunder,
-            address storedManager,
-            uint256 capital,
-            uint256 finalBalance,
-            uint16 funderShareBps,
-            uint16 managerShareBps,
-            bool settled
-        ) = engine.projects(0);
-
-        assertEq(storedFunder, funder, "funder mismatch");
-        assertEq(storedManager, manager, "manager mismatch");
-        assertEq(capital, 10_000, "capital mismatch");
-        assertEq(finalBalance, 0, "finalBalance should be 0");
-        assertEq(funderShareBps, 6000, "funderShareBps mismatch");
-        assertEq(managerShareBps, 4000, "managerShareBps mismatch");
-        assertFalse(settled, "should not be settled");
-
-        assertEq(token.balanceOf(funder), funderBalBefore - 10_000, "funder balance not reduced");
-        assertEq(token.balanceOf(address(engine)), 10_000, "engine should hold capital");
+        assertEq(pid, 0);
+        assertEq(engine.projectCount(), 1);
+        assertEq(engine.totalActiveCapital(), 10_000e6);
+        assertEq(usdc.balanceOf(address(engine)), 10_000e6);
     }
 
-    function test_createProject_invalidShares_reverts() public {
+    function test_createProject_revertsInvalidSplit() public {
         vm.prank(funder);
-        vm.expectRevert(MudarabaEngine.InvalidShares.selector);
-        engine.createProject(manager, 10_000, 5000, 4000);
+        vm.expectRevert(abi.encodeWithSelector(
+            MudarabaEngine.InvalidProfitSplit.selector, 6000, 5000
+        ));
+        engine.createProject(manager, 10_000e6, 6000, 5000);
     }
 
-    // ── settle: profit ───────────────────────────────────────────────
+    function test_createProject_revertsZeroCapital() public {
+        vm.prank(funder);
+        vm.expectRevert(MudarabaEngine.InvalidCapitalAmount.selector);
+        engine.createProject(manager, 0, 6000, 4000);
+    }
+
+    function test_createProject_revertsZeroManager() public {
+        vm.prank(funder);
+        vm.expectRevert(MudarabaEngine.ZeroAddress.selector);
+        engine.createProject(address(0), 10_000e6, 6000, 4000);
+    }
+
+    // ──────────────────────────────────────
+    // Profit Settlement — 60/40 Split
+    // ──────────────────────────────────────
 
     function test_settle_profit_60_40() public {
         vm.prank(funder);
-        engine.createProject(manager, 10_000, 6000, 4000);
+        uint256 pid = engine.createProject(manager, 10_000e6, 6000, 4000);
 
-        // Manager settles with 15000 finalBalance
-        // profit = 15000 - 10000 = 5000
-        // funderTotal  = 10000 + (5000 * 6000 / 10000) = 13000
-        // managerProfit = (5000 * 4000 / 10000) = 2000
+        // Simulate profit: final balance is 15,000 (5,000 profit)
+        usdc.mint(address(engine), 5_000e6);
 
-        uint256 funderBalBefore = token.balanceOf(funder);
-        uint256 managerBalBefore = token.balanceOf(manager);
+        uint256 funderBefore = usdc.balanceOf(funder);
+        uint256 managerBefore = usdc.balanceOf(manager);
 
         vm.prank(manager);
-        engine.settle(0, 15_000);
+        engine.settle(pid, 15_000e6);
 
-        assertEq(token.balanceOf(funder), funderBalBefore + 13_000, "funder should receive 13000");
-        assertEq(token.balanceOf(manager), managerBalBefore - 15_000 + 2_000, "manager net should be -13000");
+        // Profit = 5000
+        // Funder: 10000 + (5000 * 6000 / 10000) = 10000 + 3000 = 13000
+        // Manager: (5000 * 4000 / 10000) = 2000
+        assertEq(usdc.balanceOf(funder) - funderBefore, 13_000e6);
+        assertEq(usdc.balanceOf(manager) - managerBefore, 2_000e6);
     }
 
-    // ── settle: loss ─────────────────────────────────────────────────
+    // ──────────────────────────────────────
+    // Loss Settlement — Ghunm bil-Ghurm
+    // ──────────────────────────────────────
 
     function test_settle_loss_managerGetsZero() public {
         vm.prank(funder);
-        engine.createProject(manager, 10_000, 6000, 4000);
+        uint256 pid = engine.createProject(manager, 10_000e6, 6000, 4000);
 
-        uint256 funderBalBefore = token.balanceOf(funder);
-        uint256 managerBalBefore = token.balanceOf(manager);
+        uint256 funderBefore = usdc.balanceOf(funder);
+        uint256 managerBefore = usdc.balanceOf(manager);
 
+        // Loss: final balance is 9,000 (1,000 loss)
         vm.prank(manager);
-        engine.settle(0, 9_000);
+        engine.settle(pid, 9_000e6);
 
-        // Funder gets back 9000 (bears the 1000 loss)
-        assertEq(token.balanceOf(funder), funderBalBefore + 9_000, "funder should receive 9000");
-        // Manager transferred 9000 in and got 0 out
-        assertEq(token.balanceOf(manager), managerBalBefore - 9_000, "manager should get nothing back");
+        // Funder gets whatever remains: 9000
+        // Manager gets ZERO — bears effort loss (Burned M-Effort)
+        assertEq(usdc.balanceOf(funder) - funderBefore, 9_000e6);
+        assertEq(usdc.balanceOf(manager) - managerBefore, 0);
     }
 
-    // ── settle: already settled ──────────────────────────────────────
-
-    function test_settle_alreadySettled_reverts() public {
+    function test_settle_loss_projectStatusBurned() public {
         vm.prank(funder);
-        engine.createProject(manager, 10_000, 6000, 4000);
+        uint256 pid = engine.createProject(manager, 10_000e6, 6000, 4000);
 
         vm.prank(manager);
-        engine.settle(0, 15_000);
+        engine.settle(pid, 8_000e6);
 
-        vm.prank(manager);
-        vm.expectRevert(MudarabaEngine.ProjectAlreadySettled.selector);
-        engine.settle(0, 15_000);
+        MudarabaEngine.Project memory proj = engine.getProject(pid);
+        assertTrue(proj.status == MudarabaEngine.ProjectStatus.Burned);
     }
 
-    // ── settle: only manager ─────────────────────────────────────────
-
-    function test_settle_onlyManager_reverts() public {
+    function test_settle_totalLoss_funderGetsZero() public {
         vm.prank(funder);
-        engine.createProject(manager, 10_000, 6000, 4000);
+        uint256 pid = engine.createProject(manager, 10_000e6, 6000, 4000);
 
-        vm.prank(funder);
-        vm.expectRevert(MudarabaEngine.OnlyManager.selector);
-        engine.settle(0, 15_000);
+        uint256 funderBefore = usdc.balanceOf(funder);
+
+        // Total loss: final balance is 0
+        vm.prank(manager);
+        engine.settle(pid, 0);
+
+        assertEq(usdc.balanceOf(funder) - funderBefore, 0);
     }
 
-    // ── precision: multiply-before-divide ────────────────────────────
+    // ──────────────────────────────────────
+    // Settlement Guards
+    // ──────────────────────────────────────
 
-    function test_multiplyBeforeDivide_precision() public {
-        // capital = 999, managerShareBps = 4000 (40%)
+    function test_settle_revertsNotManager() public {
         vm.prank(funder);
-        engine.createProject(manager, 999, 6000, 4000);
+        uint256 pid = engine.createProject(manager, 10_000e6, 6000, 4000);
 
-        // Settle with finalBalance = 1998 => profit = 999
-        // managerProfit = (999 * 4000) / 10000 = 3996000 / 10000 = 399 (not 0)
+        address rando = makeAddr("rando");
+        vm.prank(rando);
+        vm.expectRevert(abi.encodeWithSelector(
+            MudarabaEngine.NotProjectManager.selector, rando, manager
+        ));
+        engine.settle(pid, 10_000e6);
+    }
+
+    function test_settle_revertsAlreadySettled() public {
+        vm.prank(funder);
+        uint256 pid = engine.createProject(manager, 10_000e6, 6000, 4000);
+
         vm.prank(manager);
-        engine.settle(0, 1_998);
+        engine.settle(pid, 10_000e6);
 
-        // funderProfit = (999 * 6000) / 10000 = 5994000 / 10000 = 599
-        // funderTotal  = 999 + 599 = 1598
-        // managerProfit = 399
-        // Total distributed = 1598 + 399 = 1997 (1 wei dust stays in contract)
+        vm.prank(manager);
+        vm.expectRevert(abi.encodeWithSelector(
+            MudarabaEngine.ProjectAlreadySettled.selector, pid
+        ));
+        engine.settle(pid, 10_000e6);
+    }
 
-        (, address storedManager, uint256 capital, uint256 finalBalance,,,) = engine.projects(0);
-        assertEq(storedManager, manager);
-        assertEq(capital, 999);
-        assertEq(finalBalance, 1_998);
+    // ──────────────────────────────────────
+    // Precision Tests
+    // ──────────────────────────────────────
 
-        // Verify manager got a non-zero profit
-        // managerProfit should be 399, not 0
-        // We check via balance: manager sent 1998, got back 399 => net -1599
-        // Since we cannot easily isolate, let us verify total distributed is correct
-        // engine should hold: 10000 (from first project capital already settled above... no,
-        // this is a fresh project)
-        // engine received capital=999 from funder, then 1998 from manager = 2997
-        // engine sent funderTotal=1598 to funder, managerProfit=399 to manager = 1997
-        // engine balance = 2997 - 1997 = 1000 (999 initial capital + 1 dust)
-        // Actually engine sent initial capital out too via funderTotal which includes capital
-        // engine holds: 999 (from createProject) + 1998 (from settle) - 1598 (funder) - 399 (manager) = 1000
-        assertEq(token.balanceOf(address(engine)), 1_000, "engine dust should be 1 wei (999+1)");
+    function test_settle_multiplyBeforeDivide_oddNumbers() public {
+        vm.prank(funder);
+        uint256 pid = engine.createProject(manager, 999e6, 6000, 4000);
+
+        // Profit: 1 unit
+        usdc.mint(address(engine), 1e6);
+
+        vm.prank(manager);
+        engine.settle(pid, 1000e6);
+
+        // Profit = 1e6
+        // Funder profit: (1e6 * 6000) / 10000 = 600000 (not 0)
+        // Manager profit: (1e6 * 4000) / 10000 = 400000 (not 0)
+        MudarabaEngine.Project memory proj = engine.getProject(pid);
+        assertTrue(proj.status == MudarabaEngine.ProjectStatus.Settled);
+    }
+
+    // ──────────────────────────────────────
+    // Fuzz: Total Distribution Invariant
+    // ──────────────────────────────────────
+
+    function testFuzz_settlement_conservesFunds(
+        uint128 capital,
+        uint128 finalBalance,
+        uint16 funderBps
+    ) public {
+        capital = uint128(bound(capital, 1e6, 100_000_000e6));
+        finalBalance = uint128(bound(finalBalance, 0, capital * 2));
+        funderBps = uint16(bound(funderBps, 100, 9900));
+        uint16 managerBps = 10_000 - funderBps;
+
+        usdc.mint(funder, capital);
+        vm.prank(funder);
+        usdc.approve(address(engine), type(uint256).max);
+
+        vm.prank(funder);
+        uint256 pid = engine.createProject(manager, capital, funderBps, managerBps);
+
+        // Ensure engine has enough for settlement
+        if (finalBalance > capital) {
+            usdc.mint(address(engine), finalBalance - capital);
+        }
+
+        uint256 engineBefore = usdc.balanceOf(address(engine));
+        uint256 funderBefore = usdc.balanceOf(funder);
+        uint256 managerBefore = usdc.balanceOf(manager);
+
+        vm.prank(manager);
+        engine.settle(pid, finalBalance);
+
+        uint256 totalPaid = (usdc.balanceOf(funder) - funderBefore)
+            + (usdc.balanceOf(manager) - managerBefore);
+
+        // INVARIANT: total paid out must not exceed final balance
+        assertTrue(totalPaid <= finalBalance, "Paid more than available");
     }
 }

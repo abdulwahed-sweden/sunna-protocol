@@ -2,50 +2,137 @@
 pragma solidity ^0.8.24;
 
 import "forge-std/Test.sol";
-import {FeeController} from "../../src/core/FeeController.sol";
+import "../../src/core/FeeController.sol";
+import "../../src/core/SolvencyGuard.sol";
 
+/// @title FeeController Tests — PY-1 Phantom Yield Prevention
+/// @author Abdulwahed Mansour — Sunna Protocol
 contract FeeControllerTest is Test {
-    FeeController public controller;
+    SolvencyGuard guard;
+    FeeController controller;
+    address engine = makeAddr("engine");
 
     function setUp() public {
-        // Pass a dummy solvency guard address; admin is this contract
-        address dummySolvencyGuard = address(0x1234);
-        controller = new FeeController(dummySolvencyGuard, address(this));
+        guard = new SolvencyGuard();
+        guard.authorizeEngine(engine);
+        controller = new FeeController(address(guard), 500); // 5% fee
     }
 
-    function test_calculateFee_withProfit() public view {
-        // profit=1000, loss=0, feeBps=500 => fee = 1000 * 500 / 10000 = 50
-        uint256 fee = controller.calculateFee(1000, 0);
-        assertEq(fee, 50);
+    // ──────────────────────────────────────
+    // PY-1: No Fee During Deficit
+    // ──────────────────────────────────────
+
+    function test_calculateFee_zeroWhenDeficit() public {
+        // Create deficit: liabilities > assets
+        vm.startPrank(engine);
+        guard.increaseAssets(100);
+        guard.setLiabilities(200);
+        vm.stopPrank();
+
+        uint256 fee = controller.calculateFee(10_000);
+        assertEq(fee, 0, "Fee must be zero during deficit");
     }
 
-    function test_calculateFee_withLoss() public view {
-        // Any loss > 0 => fee must be 0 (PY-1 invariant)
-        uint256 fee = controller.calculateFee(1000, 500);
+    function test_calculateFee_correctWhenSolvent() public {
+        vm.startPrank(engine);
+        guard.increaseAssets(1000);
+        guard.setLiabilities(500);
+        vm.stopPrank();
+
+        uint256 fee = controller.calculateFee(10_000);
+        // 10000 * 500 / 10000 = 500
+        assertEq(fee, 500);
+    }
+
+    function test_calculateFee_zeroProfit() public {
+        vm.startPrank(engine);
+        guard.increaseAssets(1000);
+        vm.stopPrank();
+
+        uint256 fee = controller.calculateFee(0);
         assertEq(fee, 0);
     }
 
-    function test_calculateFee_zeroProfit() public view {
-        // profit=0, loss=0 => fee = 0 * 500 / 10000 = 0
-        uint256 fee = controller.calculateFee(0, 0);
+    function test_previewFee_blockedDuringDeficit() public {
+        vm.startPrank(engine);
+        guard.increaseAssets(10);
+        guard.setLiabilities(100);
+        vm.stopPrank();
+
+        (uint256 fee, bool blocked) = controller.previewFee(5000);
         assertEq(fee, 0);
+        assertTrue(blocked);
     }
 
-    function test_setFeeBps() public {
-        controller.setFeeBps(1000);
-        assertEq(controller.feeBps(), 1000);
+    function test_previewFee_notBlockedWhenSolvent() public {
+        vm.startPrank(engine);
+        guard.increaseAssets(1000);
+        vm.stopPrank();
+
+        (uint256 fee, bool blocked) = controller.previewFee(5000);
+        assertEq(fee, 250); // 5000 * 500 / 10000
+        assertFalse(blocked);
     }
 
-    function test_setFeeBps_exceedsMax_reverts() public {
-        // Max is 2000 (20%), so 3000 should revert
-        vm.expectRevert(FeeController.ExcessiveFee.selector);
+    // ──────────────────────────────────────
+    // Fee Tracking
+    // ──────────────────────────────────────
+
+    function test_totalFeesBlocked_accumulates() public {
+        vm.startPrank(engine);
+        guard.increaseAssets(10);
+        guard.setLiabilities(100);
+        vm.stopPrank();
+
+        controller.calculateFee(10_000);
+        controller.calculateFee(20_000);
+
+        // Should have accumulated 500 + 1000 = 1500 blocked
+        assertEq(controller.totalFeesBlocked(), 1500);
+    }
+
+    function test_totalFeesCalculated_accumulates() public {
+        vm.startPrank(engine);
+        guard.increaseAssets(1000);
+        vm.stopPrank();
+
+        controller.calculateFee(10_000);
+        controller.calculateFee(20_000);
+
+        // 500 + 1000 = 1500
+        assertEq(controller.totalFeesCalculated(), 1500);
+    }
+
+    // ──────────────────────────────────────
+    // Admin
+    // ──────────────────────────────────────
+
+    function test_setFeeBps_revertsAboveMax() public {
+        vm.expectRevert(abi.encodeWithSelector(
+            FeeController.FeeBpsTooHigh.selector, 3000, 2000
+        ));
         controller.setFeeBps(3000);
     }
 
-    function test_onlyAdmin_setFeeBps_reverts() public {
-        address randomUser = address(0xBEEF);
-        vm.prank(randomUser);
-        vm.expectRevert(FeeController.UnauthorizedCaller.selector);
-        controller.setFeeBps(1000);
+    // ──────────────────────────────────────
+    // Fuzz: PY-1 Always Holds
+    // ──────────────────────────────────────
+
+    function testFuzz_noFeeWhenDeficitExists(
+        uint128 assets,
+        uint128 liabilities,
+        uint128 profit
+    ) public {
+        assets = uint128(bound(assets, 0, type(uint64).max));
+        liabilities = uint128(bound(liabilities, assets + 1, type(uint128).max));
+        profit = uint128(bound(profit, 1, type(uint64).max));
+
+        vm.startPrank(engine);
+        guard.increaseAssets(assets);
+        guard.setLiabilities(liabilities);
+        vm.stopPrank();
+
+        uint256 fee = controller.calculateFee(profit);
+        assertEq(fee, 0, "PY-1 violated: fee extracted during deficit");
     }
 }

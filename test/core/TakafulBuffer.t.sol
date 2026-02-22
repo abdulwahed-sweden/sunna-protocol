@@ -22,59 +22,58 @@ contract TakafulBufferTest is Test {
 
     function setUp() public {
         token = new MockERC20();
-        solvencyGuard = new SolvencyGuard(address(this));
-        buffer = new TakafulBuffer(
-            address(solvencyGuard),
-            address(token),
-            address(this)
-        );
+        solvencyGuard = new SolvencyGuard();
+        buffer = new TakafulBuffer(address(token), address(solvencyGuard));
 
-        // Mint tokens to test contract and approve buffer to spend them
+        // Authorize this test contract as an engine on both guards
+        solvencyGuard.authorizeEngine(address(this));
+        buffer.authorizeEngine(address(this));
+
+        // Mint tokens to this contract and approve buffer
         token.mint(address(this), 1_000_000);
         token.approve(address(buffer), type(uint256).max);
 
-        // Set solvency guard assets so system starts solvent
-        solvencyGuard.updateAssets(10000);
+        // Make system solvent: assets > liabilities
+        solvencyGuard.increaseAssets(10_000);
     }
 
-    function test_escrowFee() public {
-        buffer.escrowFee(recipient, 100);
-        assertEq(buffer.escrowedFees(recipient), 100);
+    function test_bufferFees() public {
+        buffer.bufferFees(100);
+        assertEq(buffer.totalBuffered(), 100);
     }
 
     function test_releaseFees() public {
-        buffer.escrowFee(recipient, 100);
+        buffer.bufferFees(100);
 
         // Release fees — system is solvent
-        buffer.releaseFees(recipient);
+        buffer.releaseFees(recipient, 100);
 
         assertEq(token.balanceOf(recipient), 100);
-        assertEq(buffer.escrowedFees(recipient), 0);
+        assertEq(buffer.totalBuffered(), 0);
     }
 
     function test_releaseFees_revertsWhenInsolvent() public {
-        buffer.escrowFee(recipient, 100);
+        buffer.bufferFees(100);
 
-        // Make the system insolvent: assets=0, liabilities=100
-        solvencyGuard.updateAssets(0);
-        solvencyGuard.updateLiabilities(100);
+        // Make the system insolvent: liabilities > assets
+        solvencyGuard.setLiabilities(20_000);
 
-        vm.expectRevert(TakafulBuffer.InsolvencyDetected.selector);
-        buffer.releaseFees(recipient);
+        vm.expectRevert(TakafulBuffer.ProtocolInsolvent.selector);
+        buffer.releaseFees(recipient, 100);
     }
 
-    function test_forfeitFees() public {
-        buffer.escrowFee(recipient, 100);
-        assertEq(buffer.escrowedFees(recipient), 100);
+    function test_useForRecovery() public {
+        buffer.bufferFees(100);
+        assertEq(buffer.totalBuffered(), 100);
 
-        buffer.forfeitFees(recipient);
-        assertEq(buffer.escrowedFees(recipient), 0);
+        buffer.useForRecovery(50);
+        assertEq(buffer.totalBuffered(), 50);
     }
 
-    function test_onlyAdmin_reverts() public {
+    function test_onlyEngine_reverts() public {
         address randomUser = address(0xBEEF);
         vm.prank(randomUser);
-        vm.expectRevert(TakafulBuffer.UnauthorizedCaller.selector);
-        buffer.escrowFee(recipient, 100);
+        vm.expectRevert(TakafulBuffer.OnlyEngine.selector);
+        buffer.bufferFees(100);
     }
 }

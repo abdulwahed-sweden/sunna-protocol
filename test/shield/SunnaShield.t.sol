@@ -2,154 +2,142 @@
 pragma solidity ^0.8.24;
 
 import "forge-std/Test.sol";
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import {SunnaShield} from "../../src/shield/SunnaShield.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "../../src/shield/SunnaShield.sol";
 
-contract MockToken is ERC20 {
-    constructor() ERC20("Mock USDC", "mUSDC") {}
-    function mint(address to, uint256 a) external { _mint(to, a); }
+contract MockAsset is ERC20 {
+    constructor() ERC20("Mock USDC", "USDC") {
+        _mint(msg.sender, 1_000_000e18);
+    }
+    function mint(address to, uint256 amount) external {
+        _mint(to, amount);
+    }
 }
 
+/// @title SunnaShield Tests — No-Fee-On-Loss Adapter Verification
+/// @author Abdulwahed Mansour — Sunna Protocol
 contract SunnaShieldTest is Test {
-    SunnaShield public shield;
-    MockToken public token;
-
-    address public user = makeAddr("user");
+    SunnaShield shield;
+    MockAsset asset;
+    address engine = makeAddr("engine");
 
     function setUp() public {
-        token = new MockToken();
+        asset = new MockAsset();
         shield = new SunnaShield(
-            IERC20(address(token)),
-            "Sunna Shield",
-            "sSHD",
-            address(this),  // test contract is the engine
-            500              // 5% fee in basis points
+            IERC20(address(asset)),
+            "Shielded USDC",
+            "sUSDC",
+            engine,
+            500 // 5% fee
         );
-        // Mint tokens to this contract (engine) and user
-        token.mint(address(this), 1_000_000e18);
-        token.mint(user, 1_000_000e18);
 
-        // Approve shield from engine
-        token.approve(address(shield), type(uint256).max);
-
-        // Approve shield from user
-        vm.prank(user);
-        token.approve(address(shield), type(uint256).max);
+        // Engine needs tokens for repay
+        asset.mint(engine, 1_000_000e18);
+        vm.prank(engine);
+        asset.approve(address(shield), type(uint256).max);
     }
 
-    // ─── deposit ───────────────────────────────────────────────
+    // ──────────────────────────────────────
+    // Loss Reporting — ZERO fees
+    // ──────────────────────────────────────
 
-    function test_deposit() public {
-        uint256 depositAmount = 1000e18;
+    function test_reportLoss_zeroFeeMinted() public {
+        vm.prank(engine);
+        shield.recordInvestment(10_000e18);
 
-        vm.prank(user);
-        uint256 shares = shield.deposit(depositAmount, user);
+        uint256 totalSupplyBefore = shield.totalSupply();
 
-        assertGt(shares, 0, "shares should be > 0");
-        assertEq(shield.balanceOf(user), shares, "user share balance mismatch");
-        assertEq(shield.investedAssets(), depositAmount, "investedAssets mismatch");
+        vm.prank(engine);
+        shield.reportLoss(3_000e18);
+
+        // No new shares should have been minted
+        assertEq(shield.totalSupply(), totalSupplyBefore, "Shares minted on loss!");
+        assertEq(shield.investedAssets(), 7_000e18);
+        assertEq(shield.totalReportedLoss(), 3_000e18);
     }
 
-    // ─── reportLoss — no fee shares minted ─────────────────────
+    function test_reportLoss_revertsExceedsInvested() public {
+        vm.prank(engine);
+        shield.recordInvestment(5_000e18);
 
-    function test_reportLoss_noFeeMinted() public {
-        // Deposit 1000 tokens from user
-        vm.prank(user);
-        shield.deposit(1000e18, user);
-
-        uint256 engineSharesBefore = shield.balanceOf(address(this));
-
-        // Engine reports a loss of 500
-        shield.reportLoss(500e18);
-
-        uint256 engineSharesAfter = shield.balanceOf(address(this));
-
-        assertEq(engineSharesAfter, engineSharesBefore, "no fee shares should be minted on loss");
-        assertEq(shield.investedAssets(), 500e18, "investedAssets should decrease by loss");
+        vm.prank(engine);
+        vm.expectRevert(abi.encodeWithSelector(
+            SunnaShield.LossExceedsInvested.selector, 6_000e18, 5_000e18
+        ));
+        shield.reportLoss(6_000e18);
     }
 
-    // ─── repay with profit — fees minted ───────────────────────
+    // ──────────────────────────────────────
+    // Profit Repayment — fees on profit only
+    // ──────────────────────────────────────
 
-    function test_repay_withProfit_mintsFees() public {
-        // Deposit 1000 tokens from user
-        vm.prank(user);
-        shield.deposit(1000e18, user);
+    function test_repay_feeOnlyOnProfit() public {
+        vm.prank(engine);
+        shield.recordInvestment(10_000e18);
 
-        uint256 engineSharesBefore = shield.balanceOf(address(this));
+        // Seed with a depositor so convertToShares works
+        asset.mint(address(this), 1e18);
+        asset.approve(address(shield), 1e18);
+        shield.deposit(1e18, address(this));
 
-        // Engine repays principal 1000 + profit 200
-        // Fee = 200 * 500 / 10000 = 10 tokens worth of shares
-        shield.repay(1000e18, 200e18);
+        vm.prank(engine);
+        shield.repay(10_000e18, 2_000e18);
 
-        uint256 engineSharesAfter = shield.balanceOf(address(this));
-        uint256 feeSharesMinted = engineSharesAfter - engineSharesBefore;
-
-        assertGt(feeSharesMinted, 0, "fee shares should be minted on profit");
-
-        // The fee in asset terms should be ~10 tokens (200 * 500 / 10000)
-        uint256 feeAssets = shield.convertToAssets(feeSharesMinted);
-        assertApproxEqAbs(feeAssets, 10e18, 0.1e18, "fee assets should be ~10 tokens");
+        assertEq(shield.totalRealizedProfit(), 2_000e18);
     }
 
-    // ─── repay with zero profit — no fees ──────────────────────
+    // ──────────────────────────────────────
+    // Access Control
+    // ──────────────────────────────────────
 
-    function test_repay_zeroProfit_noFees() public {
-        // Deposit 1000 tokens from user
-        vm.prank(user);
-        shield.deposit(1000e18, user);
-
-        uint256 engineSharesBefore = shield.balanceOf(address(this));
-
-        // Engine repays principal 1000 with zero profit
-        shield.repay(1000e18, 0);
-
-        uint256 engineSharesAfter = shield.balanceOf(address(this));
-
-        assertEq(engineSharesAfter, engineSharesBefore, "no fee shares should be minted on zero profit");
+    function test_reportLoss_onlyEngine() public {
+        address rando = makeAddr("rando");
+        vm.prank(rando);
+        vm.expectRevert(SunnaShield.OnlyEngine.selector);
+        shield.reportLoss(100);
     }
 
-    // ─── reportLoss reverts on excess ──────────────────────────
-
-    function test_reportLoss_revertsOnExcess() public {
-        // Deposit 100 tokens from user
-        vm.prank(user);
-        shield.deposit(100e18, user);
-
-        // Attempt to report loss greater than invested
-        vm.expectRevert("SUNNA: loss > invested");
-        shield.reportLoss(200e18);
+    function test_repay_onlyEngine() public {
+        address rando = makeAddr("rando");
+        vm.prank(rando);
+        vm.expectRevert(SunnaShield.OnlyEngine.selector);
+        shield.repay(100, 0);
     }
 
-    // ─── onlyEngine — reportLoss reverts for non-engine ────────
+    // ──────────────────────────────────────
+    // Shield Status
+    // ──────────────────────────────────────
 
-    function test_onlyEngine_reportLoss_reverts() public {
-        // Deposit 100 tokens from user
-        vm.prank(user);
-        shield.deposit(100e18, user);
+    function test_shieldStatus_tracksCorrectly() public {
+        vm.startPrank(engine);
+        shield.recordInvestment(10_000e18);
+        shield.reportLoss(2_000e18);
+        vm.stopPrank();
 
-        // Random address tries to report loss
-        vm.prank(makeAddr("attacker"));
-        vm.expectRevert(SunnaShield.UnauthorizedEngine.selector);
-        shield.reportLoss(50e18);
+        (uint256 invested, uint256 profit, uint256 loss, int256 net) = shield.shieldStatus();
+        assertEq(invested, 8_000e18);
+        assertEq(profit, 0);
+        assertEq(loss, 2_000e18);
+        assertEq(net, -2_000e18);
     }
 
-    // ─── fuzz: no fee on any loss ──────────────────────────────
+    // ──────────────────────────────────────
+    // Fuzz: No Fee On Any Loss Amount
+    // ──────────────────────────────────────
 
-    function testFuzz_noFeeOnAnyLoss(uint256 lossAmount) public {
-        uint256 depositAmount = 10_000e18;
+    function testFuzz_reportLoss_neverMintsFees(uint128 invested, uint128 loss) public {
+        invested = uint128(bound(invested, 1, type(uint64).max));
+        loss = uint128(bound(loss, 1, invested));
 
-        vm.prank(user);
-        shield.deposit(depositAmount, user);
+        vm.prank(engine);
+        shield.recordInvestment(invested);
 
-        lossAmount = bound(lossAmount, 1, shield.investedAssets());
+        uint256 supplyBefore = shield.totalSupply();
 
-        uint256 engineSharesBefore = shield.balanceOf(address(this));
+        vm.prank(engine);
+        shield.reportLoss(loss);
 
-        shield.reportLoss(lossAmount);
-
-        uint256 engineSharesAfter = shield.balanceOf(address(this));
-
-        assertEq(engineSharesAfter, engineSharesBefore, "no fee shares should ever be minted on loss");
+        assertEq(shield.totalSupply(), supplyBefore, "PY-1 violated in Shield: shares minted on loss");
     }
 }

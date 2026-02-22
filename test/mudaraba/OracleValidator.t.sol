@@ -2,10 +2,9 @@
 pragma solidity ^0.8.24;
 
 import "forge-std/Test.sol";
-import {OracleValidator} from "../../src/mudaraba/OracleValidator.sol";
-import {AggregatorV3Interface} from "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
+import {OracleValidator, IAggregatorV3} from "../../src/mudaraba/OracleValidator.sol";
 
-contract MockAggregator is AggregatorV3Interface {
+contract MockAggregator is IAggregatorV3 {
     int256 public mockAnswer;
     uint256 public mockUpdatedAt;
     uint80 public mockRoundId;
@@ -19,11 +18,6 @@ contract MockAggregator is AggregatorV3Interface {
     }
 
     function decimals() external pure returns (uint8) { return 8; }
-    function description() external pure returns (string memory) { return "Mock"; }
-    function version() external pure returns (uint256) { return 1; }
-    function getRoundData(uint80) external view returns (uint80, int256, uint256, uint256, uint80) {
-        return (mockRoundId, mockAnswer, 0, mockUpdatedAt, mockAnsweredInRound);
-    }
     function latestRoundData() external view returns (uint80, int256, uint256, uint256, uint80) {
         return (mockRoundId, mockAnswer, 0, mockUpdatedAt, mockAnsweredInRound);
     }
@@ -34,7 +28,7 @@ contract OracleValidatorTest is Test {
     MockAggregator aggregator;
 
     function setUp() public {
-        validator = new OracleValidator();
+        validator = new OracleValidator(3600);
         aggregator = new MockAggregator();
     }
 
@@ -50,7 +44,7 @@ contract OracleValidatorTest is Test {
             1                // answeredInRound == roundId (valid)
         );
 
-        (uint256 price, uint8 decimals) = validator.getValidatedPrice(AggregatorV3Interface(address(aggregator)));
+        (uint256 price, uint8 decimals, ) = validator.getValidatedPrice(address(aggregator));
 
         assertEq(price, uint256(expectedAnswer), "price should match oracle answer");
         assertEq(decimals, 8, "decimals should be 8");
@@ -66,15 +60,15 @@ contract OracleValidatorTest is Test {
             1
         );
 
-        vm.expectRevert(OracleValidator.NegativePrice.selector);
-        validator.getValidatedPrice(AggregatorV3Interface(address(aggregator)));
+        vm.expectRevert(abi.encodeWithSelector(OracleValidator.InvalidOraclePrice.selector, int256(-1)));
+        validator.getValidatedPrice(address(aggregator));
     }
 
     // ── getValidatedPrice: stale price reverts ───────────────────────
 
     function test_stalePrice_reverts() public {
         vm.warp(10_000);
-        uint256 staleTime = block.timestamp - 7200; // 2 hours ago, exceeds MAX_STALENESS (3600)
+        uint256 staleTime = block.timestamp - 7200; // 2 hours ago, exceeds maxStaleness (3600)
 
         aggregator.setMockData(
             100_000_000_000,
@@ -85,12 +79,13 @@ contract OracleValidatorTest is Test {
 
         vm.expectRevert(
             abi.encodeWithSelector(
-                OracleValidator.StalePrice.selector,
+                OracleValidator.StaleOracleData.selector,
                 staleTime,
-                block.timestamp - staleTime
+                block.timestamp,
+                3600
             )
         );
-        validator.getValidatedPrice(AggregatorV3Interface(address(aggregator)));
+        validator.getValidatedPrice(address(aggregator));
     }
 
     // ── getValidatedPrice: invalid round reverts ─────────────────────
@@ -105,11 +100,11 @@ contract OracleValidatorTest is Test {
 
         vm.expectRevert(
             abi.encodeWithSelector(
-                OracleValidator.InvalidRound.selector,
+                OracleValidator.IncompleteOracleRound.selector,
                 4, // answeredInRound
                 5  // roundId
             )
         );
-        validator.getValidatedPrice(AggregatorV3Interface(address(aggregator)));
+        validator.getValidatedPrice(address(aggregator));
     }
 }

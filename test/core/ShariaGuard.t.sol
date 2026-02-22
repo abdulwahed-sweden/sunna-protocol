@@ -9,33 +9,33 @@ contract ShariaGuardTest is Test {
 
     function setUp() public {
         // deployer (this contract) is admin
-        guard = new ShariaGuard(address(this));
+        guard = new ShariaGuard();
     }
 
-    function test_addToWhitelist() public {
-        address protocol = address(0xABCD);
-        guard.addToWhitelist(protocol);
-        assertTrue(guard.isHalal(protocol));
+    function test_whitelistAsset() public {
+        address asset = address(0xABCD);
+        guard.whitelistAsset(asset, "Test asset");
+        assertTrue(guard.isHalal(asset));
     }
 
-    function test_removeFromWhitelist() public {
-        address protocol = address(0xABCD);
-        guard.addToWhitelist(protocol);
-        assertTrue(guard.isHalal(protocol));
+    function test_delistAsset() public {
+        address asset = address(0xABCD);
+        guard.whitelistAsset(asset, "Test asset");
+        assertTrue(guard.isHalal(asset));
 
-        guard.removeFromWhitelist(protocol);
-        assertFalse(guard.isHalal(protocol));
+        guard.delistAsset(asset, "No longer halal");
+        assertFalse(guard.isHalal(asset));
     }
 
-    function test_onlyAdmin_addToWhitelist_reverts() public {
+    function test_onlyAdmin_whitelistAsset_reverts() public {
         address randomUser = address(0xBEEF);
         vm.prank(randomUser);
-        vm.expectRevert(ShariaGuard.UnauthorizedCaller.selector);
-        guard.addToWhitelist(address(0xABCD));
+        vm.expectRevert(ShariaGuard.OnlyAdmin.selector);
+        guard.whitelistAsset(address(0xABCD), "Test asset");
     }
 
     function test_isHalal_defaultFalse() public view {
-        address randomProtocol = address(0xDEAD);
-        assertFalse(guard.isHalal(randomProtocol));
+        address randomAsset = address(0xDEAD);
+        assertFalse(guard.isHalal(randomAsset));
     }
 }
