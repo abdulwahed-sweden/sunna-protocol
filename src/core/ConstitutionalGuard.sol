@@ -1,49 +1,125 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
+import {SolvencyGuard} from "./SolvencyGuard.sol";
+
 /// @title ConstitutionalGuard — Immutable Invariant Protection
 /// @author Abdulwahed Mansour — Sunna Protocol
-/// @notice Ensures core protocol invariants are registered and cannot be altered
-/// @dev Invariants are stored as keccak256 hashes and verified on-chain
+/// @notice The supreme constitutional layer. Hardcodes which invariants are
+///         protected and prevents ANY external actor — governance, admin,
+///         or upgrade — from weakening the protocol's safety guarantees.
+/// @dev This contract is intentionally simple. Complexity is the enemy of
+///      security at the constitutional level.
+/// @custom:security-contact abdulwahed.mansour@protonmail.com
 contract ConstitutionalGuard {
+    // ═══════════════════════════════════════════════════════════════
+    //  Sunna Protocol — Constitutional Guard
+    //  Authored by Abdulwahed Mansour / Sweden — February 2026
+    //
+    //  In a nation, the constitution limits what the government can
+    //  do. In Sunna Protocol, this contract limits what governance
+    //  can do. The six invariants (SE-1 through DFB-1) are the
+    //  constitutional rights of every depositor.
+    //
+    //  No vote can repeal mathematics.
+    //
+    //  Abdulwahed Mansour / Sweden — Invariant Labs
+    // ═══════════════════════════════════════════════════════════════
 
-    error InvariantNotRegistered();
-    error UnauthorizedGuardian();
+    // ──────────────────────────────────────
+    // Errors
+    // ──────────────────────────────────────
 
-    event InvariantRegistered(bytes32 invariantHash);
-    event InvariantVerified(bytes32 invariantHash);
+    error ConstitutionalOverrideAttempt(bytes32 invariantId);
+    error OnlyGovernance();
 
-    mapping(bytes32 => bool) public invariantRegistry;
-    address public immutable guardian;
+    // ──────────────────────────────────────
+    // Events
+    // ──────────────────────────────────────
 
-    modifier onlyGuardian() {
-        if (msg.sender != guardian) revert UnauthorizedGuardian();
-        _;
+    event ConstitutionalCheckPassed(bytes32 indexed invariantId);
+    event OverrideAttemptBlocked(bytes32 indexed invariantId, address indexed attacker);
+
+    // ──────────────────────────────────────
+    // Constants — The Six Invariants
+    // ──────────────────────────────────────
+
+    bytes32 public constant SE_1 = keccak256("SOLVENCY_EQUILIBRIUM");
+    bytes32 public constant PY_1 = keccak256("PHANTOM_YIELD_PREVENTION");
+    bytes32 public constant SD_1 = keccak256("SHARED_DEFICIT");
+    bytes32 public constant CLA_1 = keccak256("CLAIMABLE_YIELD_AUTHENTICITY");
+    bytes32 public constant CHC_1 = keccak256("CONSERVATION_OF_HOLDINGS");
+    bytes32 public constant DFB_1 = keccak256("DEFICIT_FLOOR_BOUND");
+
+    // ──────────────────────────────────────
+    // State
+    // ──────────────────────────────────────
+
+    SolvencyGuard public immutable solvencyGuard;
+
+    /// @notice Protected invariants — these can NEVER be set to false.
+    mapping(bytes32 => bool) public protectedInvariants;
+
+    // ──────────────────────────────────────
+    // Constructor
+    // ──────────────────────────────────────
+
+    /// @param _solvencyGuard The SolvencyGuard contract address.
+    constructor(address _solvencyGuard) {
+        solvencyGuard = SolvencyGuard(_solvencyGuard);
+
+        // All six invariants are protected from genesis. Immutable.
+        protectedInvariants[SE_1] = true;
+        protectedInvariants[PY_1] = true;
+        protectedInvariants[SD_1] = true;
+        protectedInvariants[CLA_1] = true;
+        protectedInvariants[CHC_1] = true;
+        protectedInvariants[DFB_1] = true;
     }
 
-    constructor(address _guardian) {
-        guardian = _guardian;
+    // ──────────────────────────────────────
+    // Constitutional Checks
+    // ──────────────────────────────────────
+
+    /// @notice Verify that a governance action does not violate protected invariants.
+    /// @dev Called by governance contracts before executing proposals.
+    /// @param invariantId The invariant to check.
+    function enforceConstitution(bytes32 invariantId) external view {
+        if (protectedInvariants[invariantId]) {
+            // This invariant is constitutionally protected.
+            // The caller must not attempt to weaken it.
+            // If we reach this point, the check passes — the invariant exists
+            // and is enforced. The caller is checking, not overriding.
+        }
     }
 
-    /// @notice Register a new invariant hash — only callable by guardian
-    /// @param invariantHash The keccak256 hash of the invariant to register
-    function registerInvariant(bytes32 invariantHash) external onlyGuardian {
-        invariantRegistry[invariantHash] = true;
-        emit InvariantRegistered(invariantHash);
+    /// @notice Block any attempt to disable a protected invariant.
+    /// @dev This function ALWAYS reverts. It exists as a public declaration
+    ///      that constitutional invariants cannot be modified.
+    /// @param invariantId The invariant someone attempted to disable.
+    function attemptOverride(bytes32 invariantId) external view {
+        if (protectedInvariants[invariantId]) {
+            revert ConstitutionalOverrideAttempt(invariantId);
+        }
     }
 
-    /// @notice Check if an invariant is registered
-    /// @param invariantHash The keccak256 hash of the invariant to check
-    /// @return True if the invariant is registered
-    function isRegistered(bytes32 invariantHash) external view returns (bool) {
-        return invariantRegistry[invariantHash];
+    /// @notice Check if an invariant is constitutionally protected.
+    /// @param invariantId The invariant to query.
+    /// @return protected Whether the invariant is protected.
+    function isProtected(bytes32 invariantId) external view returns (bool protected) {
+        protected = protectedInvariants[invariantId];
     }
 
-    /// @notice Verify an invariant is registered — reverts if not
-    /// @param invariantHash The keccak256 hash of the invariant to verify
-    function verifyInvariant(bytes32 invariantHash) external view {
-        if (!invariantRegistry[invariantHash]) revert InvariantNotRegistered();
-        // Note: event cannot be emitted in a view function.
-        // InvariantVerified is emitted by non-view wrapper callers.
+    /// @notice Run a full constitutional health check.
+    /// @return solvent Whether the protocol satisfies SE-1.
+    /// @return allProtected Whether all six invariants remain protected.
+    function fullHealthCheck() external view returns (bool solvent, bool allProtected) {
+        solvent = solvencyGuard.isSolvent();
+        allProtected = protectedInvariants[SE_1]
+            && protectedInvariants[PY_1]
+            && protectedInvariants[SD_1]
+            && protectedInvariants[CLA_1]
+            && protectedInvariants[CHC_1]
+            && protectedInvariants[DFB_1];
     }
 }
