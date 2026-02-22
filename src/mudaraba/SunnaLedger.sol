@@ -87,6 +87,8 @@ contract SunnaLedger {
     error UnauthorizedRecorder();
     error ZeroJHDWeight();
     error ProjectNotActive(uint256 projectId);
+    error ProjectAlreadyBurned(uint256 projectId);
+    error ManagerMismatch(address provided, address expected);
     error OnlyAdmin();
     error ZeroAddress();
 
@@ -212,6 +214,9 @@ contract SunnaLedger {
         ProjectEffort storage pe = projectEfforts[projectId];
         if (!pe.active) revert ProjectNotActive(projectId);
 
+        address expected = projectManagers[projectId];
+        if (manager != expected) revert ManagerMismatch(manager, expected);
+
         uint256 jhd = jhdWeights[actionType];
         if (jhd == 0) revert ZeroJHDWeight();
 
@@ -264,6 +269,7 @@ contract SunnaLedger {
     /// @param manager The manager whose effort is burned.
     function burnEffort(uint256 projectId, address manager) external onlyRecorder {
         ProjectEffort storage pe = projectEfforts[projectId];
+        if (pe.burned) revert ProjectAlreadyBurned(projectId);
         pe.burned = true;
         pe.active = false;
 

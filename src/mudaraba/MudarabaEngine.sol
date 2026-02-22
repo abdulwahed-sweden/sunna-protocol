@@ -75,6 +75,7 @@ contract MudarabaEngine is ReentrancyGuard {
     error NotProjectManager(address caller, address expected);
     error ZeroAddress();
     error InsufficientBalance(uint256 required, uint256 available);
+    error FinalBalanceExceedsContractBalance(uint256 finalBalance, uint256 available);
 
     // ──────────────────────────────────────
     // Events
@@ -198,7 +199,15 @@ contract MudarabaEngine is ReentrancyGuard {
 
         uint256 contractBalance = stablecoin.balanceOf(address(this));
         if (finalBalance > contractBalance) {
-            revert InsufficientBalance(finalBalance, contractBalance);
+            revert FinalBalanceExceedsContractBalance(finalBalance, contractBalance);
+        }
+
+        // BUG-002 fix: cap finalBalance to prevent draining other projects' capital.
+        // Available = contractBalance - (totalActiveCapital - this project's capital)
+        uint256 otherProjectsCapital = totalActiveCapital - proj.capital;
+        uint256 availableForProject = contractBalance - otherProjectsCapital;
+        if (finalBalance > availableForProject) {
+            revert InsufficientBalance(finalBalance, availableForProject);
         }
 
         // Effects
@@ -219,10 +228,11 @@ contract MudarabaEngine is ReentrancyGuard {
 
             netProfit = finalBalance - proj.capital;
 
-            // CRITICAL: multiply before divide to prevent precision loss
-            uint256 funderProfit = netProfit.bpsOf(proj.funderShareBps);
+            // CRITICAL: multiply before divide to prevent precision loss.
+            // BUG-003 fix: compute manager share first, assign remainder to funder.
+            // This ensures funderPayout + managerPayout == finalBalance exactly.
             managerPayout = netProfit.bpsOf(proj.managerShareBps);
-            funderPayout = proj.capital + funderProfit;
+            funderPayout = finalBalance - managerPayout;
 
             // Interactions — transfer to both parties
             stablecoin.safeTransfer(proj.funder, funderPayout);
