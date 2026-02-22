@@ -3,6 +3,7 @@ pragma solidity ^0.8.24;
 
 /// @title ISunnaLedger — Sunna Ledger Interface
 /// @author Abdulwahed Mansour — Sunna Protocol
+/// @custom:security-contact abdulwahed.mansour@protonmail.com
 interface ISunnaLedger {
     function recordEffort(uint256 projectId, address manager, uint8 actionType, bytes32 proofHash) external;
     function burnEffort(uint256 projectId, address manager, string calldata reason) external;
