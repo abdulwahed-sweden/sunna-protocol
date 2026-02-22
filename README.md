@@ -1,5 +1,11 @@
 # Sunna Protocol
 
+![Build](https://img.shields.io/badge/build-passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-87%2F87-brightgreen)
+![Solidity](https://img.shields.io/badge/solidity-0.8.24-363636)
+![Foundry](https://img.shields.io/badge/foundry-latest-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
+
 **The Right Path to Decentralized Finance**
 
 بروتوكول السُّنَّة — الطريق الصحيح للتمويل اللامركزي
