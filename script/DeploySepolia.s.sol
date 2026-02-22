@@ -17,14 +17,14 @@ import "../src/mudaraba/SunnaShares.sol";
 import "../src/mudaraba/OracleValidator.sol";
 import "../src/governance/HELALToken.sol";
 
-/// @title MockStablecoin — Test stablecoin for Sepolia
-contract MockStablecoin is ERC20 {
-    constructor() ERC20("Mock USDT", "mUSDT") {
+/// @title MockUSDC — Test stablecoin for Base Sepolia
+contract MockUSDC is ERC20 {
+    constructor() ERC20("Mock USDC", "mUSDC") {
         _mint(msg.sender, 1_000_000 * 1e18);
     }
 }
 
-/// @title DeploySepolia — Testnet Deployment
+/// @title DeploySepolia — Base Sepolia Deployment
 /// @author Abdulwahed Mansour — Sunna Protocol
 contract DeploySepolia is Script {
     function run() external {
@@ -34,7 +34,7 @@ contract DeploySepolia is Script {
         vm.startBroadcast(deployerPrivateKey);
 
         // Deploy mock stablecoin for testnet
-        MockStablecoin stablecoin = new MockStablecoin();
+        MockUSDC stablecoin = new MockUSDC();
 
         // Layer 1: Core
         SolvencyGuard solvencyGuard = new SolvencyGuard();
@@ -70,8 +70,8 @@ contract DeploySepolia is Script {
 
         vm.stopBroadcast();
 
-        console.log("=== Sepolia Deployment ===");
-        console.log("MockStablecoin:", address(stablecoin));
+        console.log("=== Base Sepolia Deployment ===");
+        console.log("MockUSDC:", address(stablecoin));
         console.log("SolvencyGuard:", address(solvencyGuard));
         console.log("ShariaGuard:", address(shariaGuard));
         console.log("FeeController:", address(feeController));
