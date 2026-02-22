@@ -148,6 +148,22 @@ forge test --match-test testFuzz
 | [Security](docs/SECURITY.md) | Threat model and audit readiness |
 | [Glossary](docs/GLOSSARY.md) | All Sunna-specific terminology |
 
+## Commit History
+
+| Hash | Message |
+|------|---------|
+| `6245a14` | chore: initial repository setup |
+| `c7a6aec` | chore: initialize Foundry project configuration |
+| `29531be` | feat(lib): add shared libraries — SunnaMath, SunnaErrors, SunnaEvents |
+| `e697a7c` | feat(interfaces): add protocol interfaces |
+| `e2f53c1` | feat(core): add Sunna Core — constitutional invariant layer |
+| `7f689c4` | feat(shield): add SunnaShield — ERC-4626 adapter layer |
+| `8f6c85b` | feat(mudaraba): add Sunna Mudaraba layer — profit-loss sharing engine |
+| `629386b` | feat(governance): add HELAL governance token — ERC-20 with mint/burn |
+| `98e99f2` | test: add comprehensive test suite — unit, fuzz, and invariant tests |
+| `771d5ca` | script: add deployment scripts — mainnet and Sepolia |
+| `2796ae4` | chore: verify build and test integrity — 87/87 tests pass |
+
 ## Author
 
 **Abdulwahed Mansour** — Invariant Labs / Red Wolves Security
