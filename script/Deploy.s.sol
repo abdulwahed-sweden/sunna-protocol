@@ -3,73 +3,60 @@ pragma solidity ^0.8.24;
 
 import "forge-std/Script.sol";
 import "../src/core/SolvencyGuard.sol";
+import "../src/core/FeeController.sol";
 import "../src/core/ShariaGuard.sol";
 import "../src/core/TakafulBuffer.sol";
-import "../src/core/FeeController.sol";
 import "../src/core/ConstitutionalGuard.sol";
-import "../src/shield/SunnaShield.sol";
 import "../src/mudaraba/MudarabaEngine.sol";
 import "../src/mudaraba/SunnaLedger.sol";
-import "../src/mudaraba/SunnaVault.sol";
-import "../src/mudaraba/SunnaShares.sol";
 import "../src/mudaraba/OracleValidator.sol";
 import "../src/governance/HELALToken.sol";
 
-/// @title Deploy — Full Mainnet Deployment
+/// @title Deploy — Sunna Protocol Full Deployment
 /// @author Abdulwahed Mansour — Sunna Protocol
 contract Deploy is Script {
     function run() external {
         uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
         address deployer = vm.addr(deployerPrivateKey);
         address stablecoin = vm.envAddress("STABLECOIN_ADDRESS");
-        
+
         vm.startBroadcast(deployerPrivateKey);
-        
-        // Layer 1: Core
-        SolvencyGuard solvencyGuard = new SolvencyGuard(deployer);
-        ShariaGuard shariaGuard = new ShariaGuard(deployer);
-        FeeController feeController = new FeeController(address(solvencyGuard), deployer);
-        ConstitutionalGuard constitutionalGuard = new ConstitutionalGuard(deployer);
-        
-        // Layer 3: Mudaraba
-        MudarabaEngine engine = new MudarabaEngine(stablecoin);
-        SunnaLedger ledger = new SunnaLedger();
-        SunnaVault vault = new SunnaVault(stablecoin);
-        SunnaShares shares = new SunnaShares("Sunna Shares", "sSHR", address(vault));
-        OracleValidator oracle = new OracleValidator();
-        
-        // Layer 1: TakafulBuffer (needs solvency guard)
-        TakafulBuffer buffer = new TakafulBuffer(address(solvencyGuard), stablecoin, deployer);
-        
-        // Layer 2: Shield
-        SunnaShield shield = new SunnaShield(
-            IERC20(stablecoin),
-            "Sunna Shield",
-            "sSHD",
-            deployer,
-            500
-        );
-        
+
+        // Layer 1: Sunna Core
+        SolvencyGuard solvencyGuard = new SolvencyGuard();
+        FeeController feeController = new FeeController(address(solvencyGuard), 500);
+        ShariaGuard shariaGuard = new ShariaGuard();
+        TakafulBuffer takafulBuffer = new TakafulBuffer(stablecoin, address(solvencyGuard));
+        ConstitutionalGuard constitutionalGuard = new ConstitutionalGuard(address(solvencyGuard));
+
+        // Layer 3: Sunna Mudaraba
+        MudarabaEngine mudarabaEngine = new MudarabaEngine(stablecoin);
+        SunnaLedger sunnaLedger = new SunnaLedger();
+        OracleValidator oracleValidator = new OracleValidator(3600);
+
         // Layer 4: Governance
-        HELALToken helal = new HELALToken(deployer);
-        
-        // Configure permissions
-        ledger.setAuthorizedRecorder(address(engine), true);
-        
+        HELALToken helalToken = new HELALToken(deployer);
+
+        // Authorization
+        solvencyGuard.authorizeEngine(address(mudarabaEngine));
+        takafulBuffer.authorizeEngine(address(mudarabaEngine));
+        sunnaLedger.setAuthorizedRecorder(address(mudarabaEngine), true);
+
+        // Whitelist stablecoin
+        shariaGuard.whitelistAsset(stablecoin, "Primary stablecoin for Mudaraba operations");
+
         vm.stopBroadcast();
-        
+
         // Log deployed addresses
+        console.log("=== Sunna Protocol Deployed ===");
         console.log("SolvencyGuard:", address(solvencyGuard));
-        console.log("ShariaGuard:", address(shariaGuard));
         console.log("FeeController:", address(feeController));
+        console.log("ShariaGuard:", address(shariaGuard));
+        console.log("TakafulBuffer:", address(takafulBuffer));
         console.log("ConstitutionalGuard:", address(constitutionalGuard));
-        console.log("TakafulBuffer:", address(buffer));
-        console.log("SunnaShield:", address(shield));
-        console.log("MudarabaEngine:", address(engine));
-        console.log("SunnaLedger:", address(ledger));
-        console.log("SunnaVault:", address(vault));
-        console.log("SunnaShares:", address(shares));
-        console.log("OracleValidator:", address(oracle));
-        console.log("HELALToken:", address(helal));
+        console.log("MudarabaEngine:", address(mudarabaEngine));
+        console.log("SunnaLedger:", address(sunnaLedger));
+        console.log("OracleValidator:", address(oracleValidator));
+        console.log("HELALToken:", address(helalToken));
     }
 }
