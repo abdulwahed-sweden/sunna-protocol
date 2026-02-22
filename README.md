@@ -158,17 +158,17 @@ forge test --match-test testFuzz
 
 | Hash | Message |
 |------|---------|
-| `6245a14` | chore: initial repository setup |
-| `c7a6aec` | chore: initialize Foundry project configuration |
-| `29531be` | feat(lib): add shared libraries — SunnaMath, SunnaErrors, SunnaEvents |
-| `e697a7c` | feat(interfaces): add protocol interfaces |
-| `e2f53c1` | feat(core): add Sunna Core — constitutional invariant layer |
-| `7f689c4` | feat(shield): add SunnaShield — ERC-4626 adapter layer |
-| `8f6c85b` | feat(mudaraba): add Sunna Mudaraba layer — profit-loss sharing engine |
-| `629386b` | feat(governance): add HELAL governance token — ERC-20 with mint/burn |
-| `98e99f2` | test: add comprehensive test suite — unit, fuzz, and invariant tests |
-| `771d5ca` | script: add deployment scripts — mainnet and Sepolia |
-| `2796ae4` | chore: verify build and test integrity — 87/87 tests pass |
+| `801cd16` | chore: initial repository setup |
+| `ef87aac` | chore: initialize Foundry project configuration |
+| `8477081` | feat(lib): add shared libraries — SunnaMath, SunnaErrors, SunnaEvents |
+| `fc404b4` | feat(interfaces): add protocol interfaces |
+| `d917af4` | feat(core): add Sunna Core — constitutional invariant layer |
+| `04f6901` | feat(shield): add SunnaShield — ERC-4626 adapter layer |
+| `5f7e215` | feat(mudaraba): add Sunna Mudaraba layer — profit-loss sharing engine |
+| `30f4531` | feat(governance): add HELAL governance token — ERC-20 with mint/burn |
+| `7d35d09` | test: add comprehensive test suite — unit, fuzz, and invariant tests |
+| `8ccbc2d` | script: add deployment scripts — mainnet and Sepolia |
+| `1c55b50` | chore: verify build and test integrity — 87/87 tests pass |
 
 ## Author
 
