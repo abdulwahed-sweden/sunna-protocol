@@ -1,103 +1,151 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-/// @title SunnaEvents
-/// @notice Event definitions shared across all Sunna Protocol contracts.
+/// @title SunnaEvents — Centralized Event Definitions
 /// @author Abdulwahed Mansour — Sunna Protocol
+/// @notice All events emitted across the Sunna Protocol ecosystem.
+///         Centralized for indexing consistency and off-chain monitoring.
+/// @custom:security-contact abdulwahed.mansour@protonmail.com
 
-library SunnaEvents {
-    // ──────────────────────────────────────────────
-    //  Shield / Vault Events
-    // ──────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+//  Sunna Protocol — Event Library
+//  Authored by Abdulwahed Mansour / Sweden — February 2026
+//
+//  Every state change must leave a permanent, auditable trace.
+//
+//  Abdulwahed Mansour / Sweden — Invariant Labs
+// ═══════════════════════════════════════════════════════════════════
 
-    /// @dev Emitted after every solvency invariant check.
-    /// @param assets      Current total assets held by the vault.
-    /// @param liabilities Current total liabilities (shares owed).
-    /// @param solvent     Whether assets >= liabilities.
-    event SolvencyChecked(uint256 assets, uint256 liabilities, bool solvent);
+// ──────────────────────────────────────
+// Solvency Events
+// ──────────────────────────────────────
 
-    /// @dev Emitted when a loss is reported against vault assets.
-    /// @param amount          The size of the loss.
-    /// @param remainingAssets Assets remaining after the loss.
-    event LossReported(uint256 amount, uint256 remainingAssets);
+/// @notice Emitted when solvency is checked.
+/// @param assets Total protocol assets at time of check.
+/// @param liabilities Total protocol liabilities at time of check.
+/// @param solvent Whether the protocol is solvent.
+event SolvencyChecked(uint256 assets, uint256 liabilities, bool solvent);
 
-    /// @dev Emitted when profit is realised and fees are minted.
-    /// @param principal The original principal amount.
-    /// @param profit    The profit earned above principal.
-    /// @param feeShares Number of fee shares minted to the treasury.
-    event ProfitRealized(uint256 principal, uint256 profit, uint256 feeShares);
+/// @notice Emitted when a loss is reported and absorbed.
+/// @param amount The loss amount absorbed.
+/// @param remainingAssets Assets remaining after loss absorption.
+event LossAbsorbed(uint256 amount, uint256 remainingAssets);
 
-    // ──────────────────────────────────────────────
-    //  Mudaraba / Project Events
-    // ──────────────────────────────────────────────
+// ──────────────────────────────────────
+// Fee Events
+// ──────────────────────────────────────
 
-    /// @dev Emitted when a new Mudaraba project is created.
-    /// @param projectId Unique identifier for the project.
-    /// @param funder    Address of the capital provider (Rabb al-Mal).
-    /// @param manager   Address of the working partner (Mudarib).
-    /// @param capital   Initial capital committed to the project.
-    event ProjectCreated(
-        uint256 indexed projectId,
-        address funder,
-        address manager,
-        uint256 capital
-    );
+/// @notice Emitted when fees are collected into the Takaful buffer.
+/// @param amount Fee amount collected.
+/// @param totalBuffered Total fees currently held in escrow.
+event FeesBuffered(uint256 amount, uint256 totalBuffered);
 
-    /// @dev Emitted when a project is settled and proceeds are distributed.
-    /// @param projectId    Unique identifier for the project.
-    /// @param finalBalance Total balance at settlement.
-    /// @param profit       Net profit (or zero if a loss occurred).
-    /// @param funderShare  Amount returned to the funder.
-    /// @param managerShare Amount paid to the manager.
-    event ProjectSettled(
-        uint256 indexed projectId,
-        uint256 finalBalance,
-        uint256 profit,
-        uint256 funderShare,
-        uint256 managerShare
-    );
+/// @notice Emitted when buffered fees are released after solvency confirmation.
+/// @param recipient Address receiving the released fees.
+/// @param amount Amount released.
+event FeesReleased(address indexed recipient, uint256 amount);
 
-    // ──────────────────────────────────────────────
-    //  Effort / JHD Events
-    // ──────────────────────────────────────────────
+/// @notice Emitted when fee extraction is blocked due to active deficit.
+/// @param attemptedAmount The fee amount that was blocked.
+/// @param currentDeficit The deficit that prevented extraction.
+event FeeExtractionBlocked(uint256 attemptedAmount, uint256 currentDeficit);
 
-    /// @dev Emitted when a manager records a unit of effort (JHD token mint).
-    /// @param projectId  The project the effort is attributed to.
-    /// @param manager    The manager who performed the effort.
-    /// @param jhdAmount  JHD tokens minted for this action.
-    /// @param actionType Numeric code identifying the type of effort.
-    /// @param proofHash  Keccak-256 hash of the off-chain proof artefact.
-    event EffortRecorded(
-        uint256 indexed projectId,
-        address indexed manager,
-        uint256 jhdAmount,
-        uint8 actionType,
-        bytes32 proofHash
-    );
+// ──────────────────────────────────────
+// Mudaraba Events
+// ──────────────────────────────────────
 
-    /// @dev Emitted when accumulated effort tokens are burned (e.g. on misconduct).
-    /// @param projectId The project the effort was attributed to.
-    /// @param manager   The manager whose tokens were burned.
-    /// @param totalJHD  Total JHD tokens burned.
-    /// @param reason    Human-readable reason for the burn.
-    event EffortBurned(
-        uint256 indexed projectId,
-        address indexed manager,
-        uint256 totalJHD,
-        string reason
-    );
+/// @notice Emitted when a new Mudaraba project is created.
+/// @param projectId Unique identifier for the project.
+/// @param funder Address of the capital provider.
+/// @param manager Address of the effort provider (Mudarib).
+/// @param capital Initial capital committed.
+/// @param funderShareBps Funder's profit share in basis points.
+event ProjectCreated(
+    uint256 indexed projectId,
+    address indexed funder,
+    address indexed manager,
+    uint256 capital,
+    uint16 funderShareBps
+);
 
-    /// @dev Emitted after an efficiency score is computed for a manager.
-    /// @param projectId       The project evaluated.
-    /// @param manager         The manager evaluated.
-    /// @param totalJHD        Total JHD tokens earned during the project.
-    /// @param profitUSD       Profit denominated in USD.
-    /// @param efficiencyScore Computed efficiency metric (higher is better).
-    event EfficiencyCalculated(
-        uint256 indexed projectId,
-        address indexed manager,
-        uint256 totalJHD,
-        uint256 profitUSD,
-        uint256 efficiencyScore
-    );
-}
+/// @notice Emitted when a project is settled (profit or loss).
+/// @param projectId The settled project.
+/// @param finalBalance The final balance at settlement.
+/// @param netProfit Net profit (zero if loss occurred).
+/// @param funderPayout Amount paid to the funder.
+/// @param managerPayout Amount paid to the manager (zero on loss).
+event ProjectSettled(
+    uint256 indexed projectId,
+    uint256 finalBalance,
+    uint256 netProfit,
+    uint256 funderPayout,
+    uint256 managerPayout
+);
+
+// ──────────────────────────────────────
+// SunnaLedger (JHD) Events
+// ──────────────────────────────────────
+
+/// @notice Emitted when effort is recorded for a manager.
+/// @param projectId The project this effort belongs to.
+/// @param manager The manager who performed the action.
+/// @param jhdAmount JHD units credited.
+/// @param actionType The type of action performed.
+/// @param proofHash On-chain proof reference (tx hash, IPFS CID, etc.).
+event EffortRecorded(
+    uint256 indexed projectId,
+    address indexed manager,
+    uint256 jhdAmount,
+    uint8 actionType,
+    bytes32 proofHash
+);
+
+/// @notice Emitted when a manager's effort on a project is burned.
+/// @param projectId The failed project.
+/// @param manager The manager whose effort was burned.
+/// @param burnedJHD Total JHD burned for this project.
+event EffortBurned(
+    uint256 indexed projectId,
+    address indexed manager,
+    uint256 burnedJHD
+);
+
+/// @notice Emitted when efficiency is calculated for a project.
+/// @param projectId The project evaluated.
+/// @param manager The manager evaluated.
+/// @param totalJHD Total effort spent.
+/// @param profitUSD Profit in base asset denomination.
+/// @param efficiency Efficiency score: (profit * 100) / jhd.
+event EfficiencyCalculated(
+    uint256 indexed projectId,
+    address indexed manager,
+    uint256 totalJHD,
+    uint256 profitUSD,
+    uint256 efficiency
+);
+
+// ──────────────────────────────────────
+// Sharia Guard Events
+// ──────────────────────────────────────
+
+/// @notice Emitted when an asset is added to the halal whitelist.
+/// @param asset The whitelisted asset address.
+event AssetWhitelisted(address indexed asset);
+
+/// @notice Emitted when an asset is removed from the halal whitelist.
+/// @param asset The removed asset address.
+event AssetDelisted(address indexed asset);
+
+// ──────────────────────────────────────
+// Shield Events
+// ──────────────────────────────────────
+
+/// @notice Emitted when profit is realized through the shield adapter.
+/// @param principal Principal amount returned.
+/// @param profit Profit amount realized.
+/// @param feeShares Fee shares minted to the engine.
+event ProfitRealized(uint256 principal, uint256 profit, uint256 feeShares);
+
+/// @notice Emitted when a loss is reported through the shield adapter.
+/// @param lossAmount The loss amount. Zero fees are minted — by design.
+event ShieldLossReported(uint256 lossAmount);

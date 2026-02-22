@@ -1,97 +1,70 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-/// @title SunnaMath
-/// @notice Safe multiply-before-divide math utilities for the Sunna Protocol.
-/// @dev    All helpers revert on division by zero and intermediate overflow.
+/// @title SunnaMath — Financial Mathematics Library
 /// @author Abdulwahed Mansour — Sunna Protocol
+/// @notice Safe arithmetic operations designed for financial calculations.
+///         All operations enforce multiply-before-divide ordering to prevent
+///         precision loss in integer arithmetic.
+/// @custom:security-contact abdulwahed.mansour@protonmail.com
 
 library SunnaMath {
-    // ──────────────────────────────────────────────
-    //  Custom Errors
-    // ──────────────────────────────────────────────
+    // ═══════════════════════════════════════════════════════════════
+    //  Sunna Protocol — Financial Math Library
+    //  Authored by Abdulwahed Mansour / Sweden — February 2026
+    //
+    //  Core principle: In integer arithmetic, (a * b) / c ≠ (a / c) * b
+    //  We ALWAYS multiply first, then divide. This is not optimization —
+    //  it is a correctness requirement. A single reversed operation can
+    //  cause silent loss of funds across thousands of transactions.
+    //
+    //  This library exists because "close enough" is not acceptable
+    //  when people's money is at stake.
+    //
+    //  Abdulwahed Mansour / Sweden — Invariant Labs
+    // ═══════════════════════════════════════════════════════════════
 
-    /// @dev Thrown when the denominator supplied to `mulDiv` is zero.
-    error ZeroDivision();
-
-    /// @dev Thrown when the intermediate multiplication overflows uint256.
-    error MulDivOverflow();
-
-    // ──────────────────────────────────────────────
-    //  Constants
-    // ──────────────────────────────────────────────
-
-    /// @dev One basis point denominator (100.00 %).
     uint256 internal constant BPS_DENOMINATOR = 10_000;
 
-    // ──────────────────────────────────────────────
-    //  Functions
-    // ──────────────────────────────────────────────
-
-    /// @notice Multiply `x` by `y` and then divide by `denominator`,
-    ///         performing the multiplication first to prevent precision loss.
-    /// @param x           First multiplicand.
-    /// @param y           Second multiplicand.
-    /// @param denominator The divisor (must be > 0).
-    /// @return result     (x * y) / denominator, rounded down.
-    function mulDiv(
-        uint256 x,
-        uint256 y,
-        uint256 denominator
-    ) internal pure returns (uint256 result) {
-        if (denominator == 0) revert ZeroDivision();
-
-        // Use the full 512-bit product so we never lose precision.
-        uint256 prod0; // Least-significant 256 bits of the product.
-        uint256 prod1; // Most-significant 256 bits of the product.
-
-        assembly {
-            let mm := mulmod(x, y, not(0))
-            prod0 := mul(x, y)
-            prod1 := sub(sub(mm, prod0), lt(mm, prod0))
-        }
-
-        // If the product fits in 256 bits we can short-circuit.
-        if (prod1 == 0) {
-            return prod0 / denominator;
-        }
-
-        // The product must not overflow 512 bits relative to denominator.
-        if (prod1 >= denominator) revert MulDivOverflow();
-
-        // 512-bit division using Knuth long division.
-        uint256 remainder;
-        assembly {
-            remainder := mulmod(x, y, denominator)
-            prod1 := sub(prod1, gt(remainder, prod0))
-            prod0 := sub(prod0, remainder)
-        }
-
-        uint256 twos = denominator & (~denominator + 1);
-        assembly {
-            denominator := div(denominator, twos)
-            prod0 := div(prod0, twos)
-            twos := add(div(sub(0, twos), twos), 1)
-        }
-        prod0 |= prod1 * twos;
-
-        uint256 inverse = (3 * denominator) ^ 2;
-        inverse *= 2 - denominator * inverse;
-        inverse *= 2 - denominator * inverse;
-        inverse *= 2 - denominator * inverse;
-        inverse *= 2 - denominator * inverse;
-        inverse *= 2 - denominator * inverse;
-        inverse *= 2 - denominator * inverse;
-
-        result = prod0 * inverse;
+    /// @notice Calculate a basis-point share of an amount.
+    /// @dev Multiply before divide: (amount * bps) / 10000.
+    ///      Reverts on overflow (Solidity 0.8+ default).
+    /// @param amount The base amount.
+    /// @param bps Basis points (e.g., 6000 = 60%).
+    /// @return result The proportional share.
+    function bpsOf(uint256 amount, uint256 bps) internal pure returns (uint256 result) {
+        result = (amount * bps) / BPS_DENOMINATOR;
     }
 
-    /// @notice Return `amount` scaled by `bps` basis points.
-    /// @dev    Equivalent to `amount * bps / 10_000` but overflow-safe.
-    /// @param amount The base value.
-    /// @param bps    Basis points (1 bps = 0.01 %).
-    /// @return The proportional value.
-    function bpsOf(uint256 amount, uint16 bps) internal pure returns (uint256) {
-        return mulDiv(amount, uint256(bps), BPS_DENOMINATOR);
+    /// @notice Calculate profit from a final balance and original capital.
+    /// @dev Returns zero if finalBalance <= capital (loss case).
+    ///      This is the core Sunna formula: P = max(0, R - L).
+    /// @param finalBalance The balance after the investment period.
+    /// @param capital The original capital committed.
+    /// @return profit Net profit, or zero if loss occurred.
+    function profitOrZero(uint256 finalBalance, uint256 capital) internal pure returns (uint256 profit) {
+        // The Sunna formula: profit exists only when final exceeds original.
+        // On loss, profit is exactly zero — never negative, never phantom.
+        profit = finalBalance > capital ? finalBalance - capital : 0;
+    }
+
+    /// @notice Safe subtraction that returns zero instead of reverting on underflow.
+    /// @param a The minuend.
+    /// @param b The subtrahend.
+    /// @return result a - b, or zero if b > a.
+    function saturatingSub(uint256 a, uint256 b) internal pure returns (uint256 result) {
+        result = a >= b ? a - b : 0;
+    }
+
+    /// @notice Calculate efficiency ratio: (profit * 100) / effort.
+    /// @dev Returns zero if effort is zero to prevent division by zero.
+    ///      Designed for `using SunnaMath for uint256` pattern:
+    ///      `totalJHD.efficiency(profitUSD)` → (profitUSD * 100) / totalJHD.
+    /// @param totalJHD The total effort units spent (self via using-for).
+    /// @param profitUSD The profit in base denomination.
+    /// @return The efficiency score (profit per 100 JHD).
+    function efficiency(uint256 totalJHD, uint256 profitUSD) internal pure returns (uint256) {
+        if (totalJHD == 0) return 0;
+        return (profitUSD * 100) / totalJHD;
     }
 }
